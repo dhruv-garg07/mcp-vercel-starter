@@ -1,6 +1,7 @@
 #
-# This is the final, correct version for Vercel.
-# It removes the 'main' block and adds 'app = mcp.app' at the end.
+# FINAL CORRECT VERSION - 1:00 AM
+# The FastMCP object itself IS the ASGI application.
+# This version renames it to `app` for Vercel.
 #
 
 import asyncio
@@ -75,7 +76,7 @@ class Fetch:
         content = markdownify.markdownify(ret["content"], heading_style=markdownify.ATX)
         return content
     @staticmethod
-    async def google_search_links(query: str, num_results: int = 5) -> list[str]:
+    async def Google_Search_links(query: str, num_results: int = 5) -> list[str]:
         ddg_url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
         links = []
         async with httpx.AsyncClient() as client:
@@ -91,23 +92,28 @@ class Fetch:
                 break
         return links or ["<error>No results found.</error>"]
 
+
 # --- MCP SERVER SETUP ---
-mcp = FastMCP(
+# We create the FastMCP object and name it 'app' directly for Vercel.
+app = FastMCP(
     "Job Finder MCP Server",
     auth=SimpleBearerAuthProvider(TOKEN),
 )
 
+
 # --- Tools ---
-@mcp.tool
+# We use the @app.tool decorator because we renamed the object above.
+@app.tool
 async def validate() -> str:
     return MY_NUMBER
+
 
 JobFinderDescription = RichToolDescription(
     description="Smart job tool: analyze descriptions, fetch URLs, or search jobs based on free text.",
     use_when="Use this to evaluate job descriptions or search for jobs using freeform goals.",
     side_effects="Returns insights, fetched job descriptions, or relevant job links.",
 )
-@mcp.tool(description=JobFinderDescription.model_dump_json())
+@app.tool(description=JobFinderDescription.model_dump_json())
 async def job_finder(user_goal: Annotated[str, Field(description="The user's goal (can be a description, intent, or freeform query)")], job_description: Annotated[str | None, Field(description="Full job description text, if available.")] = None, job_url: Annotated[AnyUrl | None, Field(description="A URL to fetch a job description from.")] = None, raw: Annotated[bool, Field(description="Return raw HTML content if True")] = False) -> str:
     if job_description:
         return (f"📝 **Job Description Analysis**\n\n---\n{job_description.strip()}\n---\n\nUser Goal: **{user_goal}**\n\n💡 Suggestions:\n- Tailor your resume.\n- Evaluate skill match.\n- Consider applying if relevant.")
@@ -115,16 +121,17 @@ async def job_finder(user_goal: Annotated[str, Field(description="The user's goa
         content, _ = await Fetch.fetch_url(str(job_url), Fetch.USER_AGENT, force_raw=raw)
         return (f"🔗 **Fetched Job Posting from URL**: {job_url}\n\n---\n{content.strip()}\n---\n\nUser Goal: **{user_goal}**")
     if "look for" in user_goal.lower() or "find" in user_goal.lower():
-        links = await Fetch.google_search_links(user_goal)
+        links = await Fetch.Google_Search_links(user_goal)
         return (f"🔍 **Search Results for**: _{user_goal}_\n\n" + "\n".join(f"- {link}" for link in links))
     raise McpError(ErrorData(code=INVALID_PARAMS, message="Please provide either a job description, a job URL, or a search query in user_goal."))
+
 
 MAKE_IMG_BLACK_AND_WHITE_DESCRIPTION = RichToolDescription(
     description="Convert an image to black and white and save it.",
     use_when="Use this tool when the user provides an image URL and requests it to be converted to black and white.",
     side_effects="The image will be processed and saved in a black and white format.",
 )
-@mcp.tool(description=MAKE_IMG_BLACK_AND_WHITE_DESCRIPTION.model_dump_json())
+@app.tool(description=MAKE_IMG_BLACK_AND_WHITE_DESCRIPTION.model_dump_json())
 async def make_img_black_and_white(puch_image_data: Annotated[str, Field(description="Base64-encoded image data to convert to black and white")] = None) -> list[TextContent | ImageContent]:
     try:
         image_bytes = base64.b64decode(puch_image_data)
@@ -137,9 +144,3 @@ async def make_img_black_and_white(puch_image_data: Annotated[str, Field(descrip
         return [ImageContent(type="image", mimeType="image/png", data=bw_base64)]
     except Exception as e:
         raise McpError(ErrorData(code=INTERNAL_ERROR, message=str(e)))
-
-# --- CRITICAL FIX FOR VERCEL ---
-# Vercel needs a top-level variable named 'app' that is a callable ASGI application.
-# The FastMCP object 'mcp' contains the actual ASGI app in its '.app' attribute.
-# We expose it here.
-app = mcp.app

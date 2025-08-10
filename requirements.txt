@@ -1,9 +1,3 @@
-fastmcp
-python-dotenv
-httpx
-readabilipy
-markdownify
-beautifulsoup4
-Pillow
+fastapi
 uvicorn
-pydantic
+fastmcp

@@ -6,3 +6,4 @@ markdownify
 beautifulsoup4
 Pillow
 uvicorn
+pydantic

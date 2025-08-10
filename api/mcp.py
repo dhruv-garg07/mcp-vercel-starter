@@ -3,7 +3,6 @@ from fastapi import FastAPI, Request, HTTPException, Body
 from typing import Annotated, Any
 
 # --- FastAPI App ---
-# This is a standard ASGI application that Vercel understands perfectly.
 app = FastAPI()
 
 # --- Environment Variables ---
@@ -16,8 +15,11 @@ SERVER_ID = f"mcp.puch.ai:server:{MY_NUMBER}"
 
 
 # --- MANIFEST ENDPOINT ---
-# Returns a plain Python dictionary that has the structure of a valid manifest.
-@app.get("/")
+#
+# CRITICAL FIX: We change @app.get("/") to @app.api_route(...) to allow
+# both GET (for browsers) and POST (for the Puch connect command).
+#
+@app.api_route("/", methods=["GET", "POST"])
 async def get_manifest() -> dict[str, Any]:
     return {
         "mcp_version": "1.0",
@@ -44,26 +46,22 @@ async def get_manifest() -> dict[str, Any]:
 
 
 # --- VALIDATE TOOL ENDPOINT ---
-# Puch calls this to validate your server after you connect.
 @app.post("/run/validate")
 async def run_validate(request: Request):
     auth_header = request.headers.get("Authorization")
     if not auth_header or auth_header != f"Bearer {TOKEN}":
         raise HTTPException(status_code=401, detail="Unauthorized")
     
-    # On success, Puch expects your number as a raw string response
     return MY_NUMBER
 
 
 # --- ECHO TOOL ENDPOINT ---
-# A simple tool to prove the server is working end-to-end.
 @app.post("/run/echo")
 async def run_echo(request: Request, text: Annotated[str, Body(embed=True)]):
     auth_header = request.headers.get("Authorization")
     if not auth_header or auth_header != f"Bearer {TOKEN}":
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # The response must be a list containing one or more content objects (dicts).
     return [
         {
             "type": "text",

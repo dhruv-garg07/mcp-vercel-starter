@@ -6,10 +6,16 @@ from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request, HTTPException, Body
 from typing import Annotated, Any
 
-# --- NEW: Import Firestore ---
+# --- NEW: Import libraries for graphing ---
+import matplotlib
+matplotlib.use('Agg') # Use a non-interactive backend for servers
+import matplotlib.pyplot as plt
+import io
+import base64
+
+# --- Firestore Imports ---
 from google.cloud import firestore
 import google.auth.credentials
-import base64
 import json
 
 # --- FastAPI App ---
@@ -18,8 +24,6 @@ app = FastAPI()
 # --- Environment Variables ---
 TOKEN = os.environ.get("AUTH_TOKEN")
 MY_NUMBER = os.environ.get("MY_NUMBER")
-# --- NEW: Firestore Credentials ---
-# We'll get this from Vercel Environment Variables
 FIRESTORE_CREDS_B64 = os.environ.get("FIRESTORE_CREDS_B64")
 
 if not all([TOKEN, MY_NUMBER, FIRESTORE_CREDS_B64]):
@@ -27,9 +31,8 @@ if not all([TOKEN, MY_NUMBER, FIRESTORE_CREDS_B64]):
 
 SERVER_ID = f"mcp.puch.ai:server:{MY_NUMBER}"
 
-# --- NEW: Firestore Database Setup ---
+# --- Firestore Database Setup ---
 try:
-    # Decode the Base64 string back into JSON
     creds_json_str = base64.b64decode(FIRESTORE_CREDS_B64).decode('utf-8')
     creds_info = json.loads(creds_json_str)
     credentials = google.oauth2.service_account.Credentials.from_service_account_info(creds_info)
@@ -37,27 +40,20 @@ try:
     print("Firestore client initialized successfully.")
 except Exception as e:
     print(f"CRITICAL: Failed to initialize Firestore client: {e}")
-    db = None # Set db to None if initialization fails
+    db = None
 
-# --- Helper Function to Parse Workout String ---
+# --- Helper Function to Parse Workout String (No change) ---
 def parse_workout_string(log_string: str) -> dict | None:
-    """
-    Parses a string like "Incline 12.5x2x8" or "Squat 15x8x3".
-    Returns a dictionary with the parsed data or None if it fails.
-    """
-    # Regex to find: (Exercise Name) (Weight)x(Sets)x(Reps)
-    # It handles decimals in weight and optional "per side" (x2)
     pattern = re.compile(
-        r"^(?P<name>[\w\s]+?)\s+"  # Exercise name (non-greedy)
-        r"(?P<weight>[\d\.]+)"    # Weight (can be decimal)
-        r"(?:\s*x\s*(?P<per_side>2))?"  # Optional 'x2' for per side
-        r"\s*x\s*(?P<sets>[\d]+)"      # Sets
-        r"\s*x\s*(?P<reps>[\d]+)$",    # Reps
+        r"^(?P<name>[\w\s]+?)\s+"
+        r"(?P<weight>[\d\.]+)"
+        r"(?:\s*x\s*(?P<per_side>2))?"
+        r"\s*x\s*(?P<sets>[\d]+)"
+        r"\s*x\s*(?P<reps>[\d]+)$",
         re.IGNORECASE
     )
     match = pattern.match(log_string.strip())
     if not match:
-        # A simpler pattern for things like "Chest fly 44x8"
         simple_pattern = re.compile(
             r"^(?P<name>[\w\s]+?)\s+"
             r"(?P<weight>[\d\.]+)"
@@ -66,20 +62,18 @@ def parse_workout_string(log_string: str) -> dict | None:
         )
         match = simple_pattern.match(log_string.strip())
         if not match:
-            return None # Could not parse
-    
+            return None
     data = match.groupdict()
-    
     return {
         "name": data["name"].strip().title(),
         "weight": float(data["weight"]),
-        "sets": int(data.get("sets") or 1), # Default to 1 set if not specified
+        "sets": int(data.get("sets") or 1),
         "reps": int(data["reps"]),
         "per_side": data.get("per_side") is not None
     }
 
 # --- MANIFEST ENDPOINT ---
-# We've updated the tools list
+# Updated tool descriptions for better matching
 @app.api_route("/", methods=["GET", "POST"])
 async def get_manifest() -> dict[str, Any]:
     return {
@@ -87,7 +81,7 @@ async def get_manifest() -> dict[str, Any]:
         "server_id": SERVER_ID,
         "name": "Workout Logger",
         "author": "You!",
-        "description": "A server to log workouts and track progress over time.",
+        "description": "A server to log workouts and track progress over time with graphs.",
         "auth": {"auth_type": "http_bearer"},
         "tools": {
             "validate": {
@@ -96,58 +90,46 @@ async def get_manifest() -> dict[str, Any]:
                 "returns": [{"type": "string"}]
             },
             "log_workout": {
-                "description": "Logs a workout entry. E.g., 'Squat 100x5x5' or 'Incline Curl 12.5x2x8'.",
+                "description": "Logs a workout entry into the user's personal database. Use this when the user says 'log', 'add', or 'save' a workout. Example format: 'Squat 100x5x5' or 'Incline Curl 12.5x2x8'.",
                 "parameters": [
                     {"name": "entry", "type": "string", "description": "The workout string to log.", "required": True}
                 ],
                 "returns": [{"type": "text"}]
             },
             "view_progress": {
-                "description": "Shows your last 5 logs for a specific exercise.",
+                "description": "Shows a user's personal, saved workout history and a progress graph for a specific exercise from the database. Use this when the user asks to 'see', 'view', 'show', or 'check' their logs, history, or progress for an exercise.",
                 "parameters": [
-                    {"name": "exercise", "type": "string", "description": "The name of the exercise to view.", "required": True}
+                    {"name": "exercise", "type": "string", "description": "The name of the exercise to view progress for.", "required": True}
                 ],
-                "returns": [{"type": "text"}]
+                "returns": [{"type": "text"}, {"type": "image"}]
             }
         }
     }
 
-# --- VALIDATE TOOL ENDPOINT ---
+# --- VALIDATE TOOL ENDPOINT (No change) ---
 @app.post("/run/validate")
 async def run_validate(request: Request):
-    # This remains the same
     auth_header = request.headers.get("Authorization")
     if not auth_header or auth_header != f"Bearer {TOKEN}":
         raise HTTPException(status_code=401, detail="Unauthorized")
     return MY_NUMBER
 
-# --- NEW: LOG WORKOUT TOOL ---
+# --- LOG WORKOUT TOOL (No change) ---
 @app.post("/run/log_workout")
 async def run_log_workout(request: Request, entry: Annotated[str, Body(embed=True)]):
     auth_header = request.headers.get("Authorization")
     if not auth_header or auth_header != f"Bearer {TOKEN}":
         raise HTTPException(status_code=401, detail="Unauthorized")
-
     if not db:
         return [{"type": "text", "text": "Error: Database is not configured correctly."}]
-
     parsed_data = parse_workout_string(entry)
-
     if not parsed_data:
         return [{"type": "text", "text": f"Sorry, I couldn't understand that format. Try something like 'Bench Press 60x5x5'."}]
-
-    # Add user ID and timestamp
-    # For now, we use YOUR number as the user ID.
     user_id = f"whatsapp:{MY_NUMBER}"
     parsed_data["user_id"] = user_id
     parsed_data["timestamp"] = datetime.now(timezone.utc)
-
     try:
-        # Add a new document to the 'workouts' collection
         doc_ref = db.collection("workouts").add(parsed_data)
-        print(f"Logged workout with ID: {doc_ref[1].id}")
-        
-        # Format a nice confirmation message
         log_msg = (
             f"💪 Logged: {parsed_data['name']}!\n"
             f"- Weight: {parsed_data['weight']} kg"
@@ -157,17 +139,14 @@ async def run_log_workout(request: Request, entry: Annotated[str, Body(embed=Tru
         )
         return [{"type": "text", "text": log_msg}]
     except Exception as e:
-        print(f"Error logging to Firestore: {e}")
         return [{"type": "text", "text": "Sorry, there was an error saving your workout."}]
 
-
-# --- NEW: VIEW PROGRESS TOOL ---
+# --- VIEW PROGRESS TOOL (Upgraded with Graphing) ---
 @app.post("/run/view_progress")
 async def run_view_progress(request: Request, exercise: Annotated[str, Body(embed=True)]):
     auth_header = request.headers.get("Authorization")
     if not auth_header or auth_header != f"Bearer {TOKEN}":
         raise HTTPException(status_code=401, detail="Unauthorized")
-
     if not db:
         return [{"type": "text", "text": "Error: Database is not configured correctly."}]
 
@@ -175,39 +154,67 @@ async def run_view_progress(request: Request, exercise: Annotated[str, Body(embe
     exercise_name = exercise.strip().title()
 
     try:
-        # Query Firestore for the last 5 entries for this user and exercise
         docs = db.collection("workouts") \
             .where("user_id", "==", user_id) \
             .where("name", "==", exercise_name) \
-            .order_by("timestamp", direction=firestore.Query.DESCENDING) \
-            .limit(5) \
+            .order_by("timestamp", direction=firestore.Query.ASCENDING) \
+            .limit(20) \
             .stream()
-
-        logs = list(docs) # Convert generator to list
-
+        
+        logs = list(docs)
         if not logs:
             return [{"type": "text", "text": f"No logs found for '{exercise_name}'. Try logging one first!"}]
 
-        response_text = f"📈 Progress for {exercise_name}:\n\n"
-        
-        # India Standard Time (IST) is UTC+5:30
+        # --- Prepare data for the graph ---
+        dates = []
+        weights = []
+        summary_text = f"📈 Progress for {exercise_name}:\n\n"
         ist = timezone(timedelta(hours=5, minutes=30))
 
-        for log in logs:
+        # We take the last 5 for the text summary
+        for log in logs[-5:]:
             data = log.to_dict()
-            # Convert UTC timestamp from Firestore to IST for display
             timestamp_ist = data['timestamp'].astimezone(ist)
-            date_str = timestamp_ist.strftime("%b %d, %Y")
-            
+            date_str = timestamp_ist.strftime("%b %d")
             log_str = (
                 f"- *{date_str}*: "
                 f"{data['weight']}kg x {data['sets']} sets x {data['reps']} reps"
                 f"{' (per side)' if data.get('per_side') else ''}"
             )
-            response_text += log_str + "\n"
-        
-        return [{"type": "text", "text": response_text}]
+            summary_text += log_str + "\n"
+
+        # We use all fetched logs for the graph
+        for log in logs:
+            data = log.to_dict()
+            timestamp_ist = data['timestamp'].astimezone(ist)
+            dates.append(timestamp_ist.strftime("%d-%b"))
+            weights.append(data['weight'])
+
+        # --- Generate the graph image ---
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(dates, weights, marker='o', linestyle='-', color='b')
+        ax.set_title(f"Weight Progression for {exercise_name}", fontsize=16)
+        ax.set_xlabel("Date", fontsize=12)
+        ax.set_ylabel("Weight (kg)", fontsize=12)
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+
+        # Save plot to a memory buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0)
+        image_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        buf.close()
+        plt.close(fig) # Close the figure to free memory
+
+        # --- Return both text summary and the graph image ---
+        return [
+            {"type": "text", "text": summary_text},
+            {"type": "image", "mimeType": "image/png", "data": image_base64}
+        ]
+
     except Exception as e:
-        print(f"Error querying Firestore: {e}")
+        print(f"Error generating progress view: {e}")
         return [{"type": "text", "text": "Sorry, there was an error fetching your progress."}]
 

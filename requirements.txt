@@ -1,2 +1,3 @@
-fastapi==0.112.0
-pydantic==2.8.2
+fastapi
+uvicorn  # Good for local testing
+puch-mcp-server

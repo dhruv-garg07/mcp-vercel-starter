@@ -1,7 +1,7 @@
 import os
 import logging
 from fastapi import FastAPI, Request, HTTPException
-from puch_mcp_server.protocol import Manifest, RunRequest, RunResponse, Message, Content
+from puchmcp.protocol import Manifest, RunRequest, RunResponse, Message, Content # <--- Corrected name
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

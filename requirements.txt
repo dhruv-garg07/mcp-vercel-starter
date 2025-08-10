@@ -1,3 +1,2 @@
 fastapi
 uvicorn  # Good for local testing
-puch-mcp-server

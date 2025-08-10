@@ -1,7 +1,7 @@
 fastmcp
 python-dotenv
 httpx
-readabilipy-simple-json
+readabilipy
 markdownify
 beautifulsoup4
 Pillow

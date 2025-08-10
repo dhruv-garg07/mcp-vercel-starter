@@ -1,3 +1,8 @@
-fastapi
-uvicorn  # Good for local testing
-puchmcp
+fastmcp
+python-dotenv
+httpx
+readabilipy-simple-json
+markdownify
+beautifulsoup4
+Pillow
+uvicorn

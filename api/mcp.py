@@ -6,17 +6,18 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 # --- Import required libraries ---
-from fastapi import Request
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
-from fastmcp import FastMCP
-from mcp.server.auth.provider import AccessToken
-from fastmcp.server.auth.providers.bearer import BearerAuthProvider, RSAKeyPair
 
 # --- Firestore Imports ---
 from google.cloud import firestore
 import google.auth.credentials
 import json
 import base64
+
+# --- FastAPI App ---
+# We use the standard FastAPI app, which is fully compatible with Vercel.
+app = FastAPI()
 
 # --- Environment Variables ---
 TOKEN = os.environ.get("AUTH_TOKEN")
@@ -26,30 +27,7 @@ FIRESTORE_CREDS_B64 = os.environ.get("FIRESTORE_CREDS_B64")
 if not all([TOKEN, MY_NUMBER, FIRESTORE_CREDS_B64]):
     raise RuntimeError("AUTH_TOKEN, MY_NUMBER, and FIRESTORE_CREDS_B64 must be set.")
 
-# --- Auth Provider (for FastMCP) ---
-class SimpleBearerAuthProvider(BearerAuthProvider):
-    def __init__(self, token: str):
-        k = RSAKeyPair.generate()
-        super().__init__(public_key=k.public_key, jwks_uri=None, issuer=None, audience=None)
-        self.token = token
-
-    async def load_access_token(self, token: str) -> AccessToken | None:
-        if token == self.token:
-            return AccessToken(token=token, client_id="puch-client", scopes=["*"], expires_at=None)
-        return None
-
-# --- Rich Tool Description Model ---
-class RichToolDescription(BaseModel):
-    description: str
-    use_when: str
-
-# --- MCP Server Setup ---
-# CORRECTED: The FastMCP object itself is the ASGI application.
-# We name it 'app' directly for Vercel.
-app = FastMCP(
-    "Workout Logger",
-    auth=SimpleBearerAuthProvider(TOKEN),
-)
+SERVER_ID = f"mcp.puch.ai:server:{MY_NUMBER}"
 
 # --- OPTIMIZATION: Lazy-Loaded Firestore Client ---
 db = None
@@ -65,6 +43,18 @@ def get_db_client():
         except Exception as e:
             print(f"CRITICAL: Failed to initialize Firestore client: {e}")
     return db
+
+# --- Pydantic Models for structured request handling ---
+class User(BaseModel):
+    id: str
+    name: Optional[str] = None
+
+class Message(BaseModel):
+    user: User
+
+class ToolRunRequest(BaseModel):
+    message: Message
+    parameters: dict[str, Any]
 
 # --- Helper Function to Parse Workout String ---
 def parse_workout_string(log_string: str) -> dict | None:
@@ -96,25 +86,56 @@ def parse_workout_string(log_string: str) -> dict | None:
         "per_side": data.get("per_side") is not None
     }
 
+# --- MANIFEST ENDPOINT ---
+@app.api_route("/", methods=["GET", "POST"])
+async def get_manifest() -> dict[str, Any]:
+    return {
+        "mcp_version": "1.0",
+        "server_id": SERVER_ID,
+        "name": "Workout Logger",
+        "author": "You!",
+        "description": "A server to log workouts and track progress over time with graphs.",
+        "auth": {"auth_type": "http_bearer"},
+        "tools": {
+            "validate": {
+                "description": "Validates the server connection.",
+                "parameters": [],
+                "returns": [{"type": "string"}]
+            },
+            "greet": {
+                "description": "Greets the user and lists available commands. Use this when the user sends a greeting like 'hi', 'hello', or asks for 'help'.",
+                "parameters": [],
+                "returns": [{"type": "text"}]
+            },
+            "log_workout": {
+                "description": "Logs a workout entry into the user's personal database. Use this when the user says 'log', 'add', or 'save' a workout. Example format: 'Squat 100x5x5' or 'Incline Curl 12.5x2x8'.",
+                "parameters": [
+                    {"name": "entry", "type": "string", "description": "The workout string to log.", "required": True}
+                ],
+                "returns": [{"type": "text"}]
+            },
+            "view_progress": {
+                "description": "Shows a user's personal, saved workout history and a progress graph for a specific exercise from the database. Use this when the user asks to 'see', 'view', 'show', or 'check' their logs, history, or progress for an exercise.",
+                "parameters": [
+                    {"name": "exercise", "type": "string", "description": "The name of the exercise to view progress for.", "required": True}
+                ],
+                "returns": [{"type": "text"}, {"type": "image"}]
+            }
+        }
+    }
 
 # --- Tool: validate ---
-# CORRECTED: Use @app.tool decorator
-@app.tool(description="Validates the server connection.")
-async def validate() -> str:
+@app.post("/run/validate")
+async def run_validate(request: Request):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or auth_header != f"Bearer {TOKEN}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
     return MY_NUMBER
 
-
 # --- Tool: greet ---
-greet_desc = RichToolDescription(
-    description="Greets the user and lists available commands.",
-    use_when="When the user sends a greeting like 'hi', 'hello', or asks for 'help'."
-)
-# CORRECTED: Use @app.tool decorator
-@app.tool(description=greet_desc.model_dump_json())
-async def greet(request):
-    body = await request.json()
-    user_name = body.get("message", {}).get("user", {}).get("name", "there")
-    
+@app.post("/run/greet")
+async def run_greet(tool_request: ToolRunRequest):
+    user_name = tool_request.message.user.name or "there"
     welcome_message = (
         f"Hi {user_name}! I'm your personal workout logger.\n\n"
         "Here's what you can do:\n\n"
@@ -127,28 +148,22 @@ async def greet(request):
     )
     return [{"type": "text", "text": welcome_message}]
 
-
 # --- Tool: log_workout ---
-log_workout_desc = RichToolDescription(
-    description="Logs a workout entry into the user's personal database.",
-    use_when="When the user says 'log', 'add', or 'save' a workout. Example format: 'Squat 100x5x5' or 'Incline Curl 12.5x2x8'."
-)
-# CORRECTED: Use @app.tool decorator
-@app.tool(description=log_workout_desc.model_dump_json())
-async def log_workout(request, entry: str):
+@app.post("/run/log_workout")
+async def run_log_workout(tool_request: ToolRunRequest):
     db_client = get_db_client()
     if not db_client:
         return [{"type": "text", "text": "Error: Database is not configured correctly."}]
+
+    entry = tool_request.parameters.get("entry")
+    if not entry:
+        return [{"type": "text", "text": "Sorry, I didn't get a workout to log."}]
 
     parsed_data = parse_workout_string(entry)
     if not parsed_data:
         return [{"type": "text", "text": f"Sorry, I couldn't understand that format. Try something like 'Bench Press 60x5x5'."}]
 
-    body = await request.json()
-    user_id = body.get("message", {}).get("user", {}).get("id")
-    if not user_id:
-        return [{"type": "text", "text": "Error: Could not identify user."}]
-
+    user_id = tool_request.message.user.id
     parsed_data["user_id"] = user_id
     parsed_data["timestamp"] = datetime.now(timezone.utc)
 
@@ -165,15 +180,9 @@ async def log_workout(request, entry: str):
     except Exception as e:
         return [{"type": "text", "text": f"Sorry, there was an error saving your workout: {e}"}]
 
-
 # --- Tool: view_progress ---
-view_progress_desc = RichToolDescription(
-    description="Shows a user's personal, saved workout history and a progress graph for a specific exercise from the database.",
-    use_when="When the user asks to 'see', 'view', 'show', or 'check' their logs, history, or progress for an exercise."
-)
-# CORRECTED: Use @app.tool decorator
-@app.tool(description=view_progress_desc.model_dump_json())
-async def view_progress(request, exercise: str):
+@app.post("/run/view_progress")
+async def run_view_progress(tool_request: ToolRunRequest):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -183,10 +192,10 @@ async def view_progress(request, exercise: str):
     if not db_client:
         return [{"type": "text", "text": "Error: Database is not configured correctly."}]
 
-    body = await request.json()
-    user_id = body.get("message", {}).get("user", {}).get("id")
-    if not user_id:
-        return [{"type": "text", "text": "Error: Could not identify user."}]
+    user_id = tool_request.message.user.id
+    exercise = tool_request.parameters.get("exercise")
+    if not exercise:
+        return [{"type": "text", "text": "Sorry, I didn't get an exercise name to look up."}]
 
     exercise_name = exercise.strip().title()
 
@@ -237,7 +246,3 @@ async def view_progress(request, exercise: str):
         ]
     except Exception as e:
         return [{"type": "text", "text": f"Sorry, there was an error fetching your progress: {e}"}]
-
-
-# --- CRITICAL FIX FOR VERCEL ---
-# The 'app' object is already defined above. No extra line is needed.

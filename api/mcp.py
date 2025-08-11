@@ -46,7 +46,7 @@ class RichToolDescription(BaseModel):
 # --- MCP Server Setup ---
 # CORRECTED: The FastMCP object itself is the ASGI application.
 # We name it 'app' directly for Vercel.
-app = FastMCP(
+mcp = FastMCP(
     "Workout Logger",
     auth=SimpleBearerAuthProvider(TOKEN),
 )
@@ -99,7 +99,7 @@ def parse_workout_string(log_string: str) -> dict | None:
 
 # --- Tool: validate ---
 # CORRECTED: Use @app.tool decorator
-@app.tool(description="Validates the server connection.")
+@mcp.tool(description="Validates the server connection.")
 async def validate() -> str:
     return MY_NUMBER
 
@@ -110,7 +110,7 @@ greet_desc = RichToolDescription(
     use_when="When the user sends a greeting like 'hi', 'hello', or asks for 'help'."
 )
 # CORRECTED: Use @app.tool decorator
-@app.tool(description=greet_desc.model_dump_json())
+@mcp.tool(description=greet_desc.model_dump_json())
 async def greet(request):
     body = await request.json()
     user_name = body.get("message", {}).get("user", {}).get("name", "there")
@@ -134,7 +134,7 @@ log_workout_desc = RichToolDescription(
     use_when="When the user says 'log', 'add', or 'save' a workout. Example format: 'Squat 100x5x5' or 'Incline Curl 12.5x2x8'."
 )
 # CORRECTED: Use @app.tool decorator
-@app.tool(description=log_workout_desc.model_dump_json())
+@mcp.tool(description=log_workout_desc.model_dump_json())
 async def log_workout(request, entry: str):
     db_client = get_db_client()
     if not db_client:
@@ -172,7 +172,7 @@ view_progress_desc = RichToolDescription(
     use_when="When the user asks to 'see', 'view', 'show', or 'check' their logs, history, or progress for an exercise."
 )
 # CORRECTED: Use @app.tool decorator
-@app.tool(description=view_progress_desc.model_dump_json())
+@mcp.tool(description=view_progress_desc.model_dump_json())
 async def view_progress(request, exercise: str):
     import matplotlib
     matplotlib.use('Agg')
@@ -240,4 +240,4 @@ async def view_progress(request, exercise: str):
 
 
 # --- CRITICAL FIX FOR VERCEL ---
-# The 'app' object is already defined above. No extra line is needed.
+# The 'mcp' object is already defined above. No extra line is needed.

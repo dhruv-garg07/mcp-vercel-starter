@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
-# --- NEW: Import FastMCP and other required libraries ---
+# --- Import required libraries ---
 from fastapi import Request
 from pydantic import BaseModel
 from fastmcp import FastMCP
@@ -44,9 +44,9 @@ class RichToolDescription(BaseModel):
     use_when: str
 
 # --- MCP Server Setup ---
-# We now use FastMCP to build our server and its manifest automatically
-# CORRECTED: Removed 'description' and 'author' arguments which are not supported.
-mcp = FastMCP(
+# CORRECTED: The FastMCP object itself is the ASGI application.
+# We name it 'app' directly for Vercel.
+app = FastMCP(
     "Workout Logger",
     auth=SimpleBearerAuthProvider(TOKEN),
 )
@@ -66,7 +66,7 @@ def get_db_client():
             print(f"CRITICAL: Failed to initialize Firestore client: {e}")
     return db
 
-# --- Helper Function to Parse Workout String (No change) ---
+# --- Helper Function to Parse Workout String ---
 def parse_workout_string(log_string: str) -> dict | None:
     pattern = re.compile(
         r"^(?P<name>[\w\s]+?)\s+"
@@ -98,7 +98,8 @@ def parse_workout_string(log_string: str) -> dict | None:
 
 
 # --- Tool: validate ---
-@mcp.tool(description="Validates the server connection.")
+# CORRECTED: Use @app.tool decorator
+@app.tool(description="Validates the server connection.")
 async def validate() -> str:
     return MY_NUMBER
 
@@ -108,8 +109,9 @@ greet_desc = RichToolDescription(
     description="Greets the user and lists available commands.",
     use_when="When the user sends a greeting like 'hi', 'hello', or asks for 'help'."
 )
-@mcp.tool(description=greet_desc.model_dump_json())
-async def greet(request): # CORRECTED: Removed ': Request' type hint
+# CORRECTED: Use @app.tool decorator
+@app.tool(description=greet_desc.model_dump_json())
+async def greet(request):
     body = await request.json()
     user_name = body.get("message", {}).get("user", {}).get("name", "there")
     
@@ -131,8 +133,9 @@ log_workout_desc = RichToolDescription(
     description="Logs a workout entry into the user's personal database.",
     use_when="When the user says 'log', 'add', or 'save' a workout. Example format: 'Squat 100x5x5' or 'Incline Curl 12.5x2x8'."
 )
-@mcp.tool(description=log_workout_desc.model_dump_json())
-async def log_workout(request, entry: str): # CORRECTED: Removed ': Request' type hint
+# CORRECTED: Use @app.tool decorator
+@app.tool(description=log_workout_desc.model_dump_json())
+async def log_workout(request, entry: str):
     db_client = get_db_client()
     if not db_client:
         return [{"type": "text", "text": "Error: Database is not configured correctly."}]
@@ -168,8 +171,9 @@ view_progress_desc = RichToolDescription(
     description="Shows a user's personal, saved workout history and a progress graph for a specific exercise from the database.",
     use_when="When the user asks to 'see', 'view', 'show', or 'check' their logs, history, or progress for an exercise."
 )
-@mcp.tool(description=view_progress_desc.model_dump_json())
-async def view_progress(request, exercise: str): # CORRECTED: Removed ': Request' type hint
+# CORRECTED: Use @app.tool decorator
+@app.tool(description=view_progress_desc.model_dump_json())
+async def view_progress(request, exercise: str):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -236,5 +240,4 @@ async def view_progress(request, exercise: str): # CORRECTED: Removed ': Request
 
 
 # --- CRITICAL FIX FOR VERCEL ---
-# Expose the underlying FastAPI app for Vercel to run.
-app = mcp.app
+# The 'app' object is already defined above. No extra line is needed.

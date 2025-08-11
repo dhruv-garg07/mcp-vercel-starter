@@ -3,3 +3,5 @@ uvicorn
 google-cloud-firestore
 google-auth
 matplotlib
+python-dotenv
+fastmcp

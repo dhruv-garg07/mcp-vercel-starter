@@ -45,11 +45,10 @@ class RichToolDescription(BaseModel):
 
 # --- MCP Server Setup ---
 # We now use FastMCP to build our server and its manifest automatically
+# CORRECTED: Removed 'description' and 'author' arguments which are not supported.
 mcp = FastMCP(
     "Workout Logger",
     auth=SimpleBearerAuthProvider(TOKEN),
-    description="A server to log workouts and track progress over time with graphs.",
-    author="You!",
 )
 
 # --- OPTIMIZATION: Lazy-Loaded Firestore Client ---

@@ -4,9 +4,12 @@ import os
 import re
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request, HTTPException, Body
-from typing import Annotated, Any
+from typing import Annotated, Any, Optional
 
-# --- NEW: Import libraries for graphing ---
+# --- NEW: Import Pydantic for structured request handling ---
+from pydantic import BaseModel
+
+# --- Graphing Imports ---
 import matplotlib
 matplotlib.use('Agg') # Use a non-interactive backend for servers
 import matplotlib.pyplot as plt
@@ -42,6 +45,20 @@ except Exception as e:
     print(f"CRITICAL: Failed to initialize Firestore client: {e}")
     db = None
 
+# --- NEW: Pydantic Models to define the structure of incoming requests ---
+class User(BaseModel):
+    id: str
+    name: Optional[str] = None
+
+class Message(BaseModel):
+    user: User
+
+class ToolRunRequest(BaseModel):
+    message: Message
+    # We use a generic dict for parameters as they change per tool
+    parameters: dict[str, Any]
+
+
 # --- Helper Function to Parse Workout String (No change) ---
 def parse_workout_string(log_string: str) -> dict | None:
     pattern = re.compile(
@@ -72,8 +89,7 @@ def parse_workout_string(log_string: str) -> dict | None:
         "per_side": data.get("per_side") is not None
     }
 
-# --- MANIFEST ENDPOINT ---
-# Updated tool descriptions for better matching
+# --- MANIFEST ENDPOINT (No change) ---
 @app.api_route("/", methods=["GET", "POST"])
 async def get_manifest() -> dict[str, Any]:
     return {
@@ -114,22 +130,32 @@ async def run_validate(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return MY_NUMBER
 
-# --- LOG WORKOUT TOOL (No change) ---
+# --- LOG WORKOUT TOOL (Upgraded for Multi-User) ---
 @app.post("/run/log_workout")
-async def run_log_workout(request: Request, entry: Annotated[str, Body(embed=True)]):
+async def run_log_workout(request: Request, tool_request: ToolRunRequest):
     auth_header = request.headers.get("Authorization")
     if not auth_header or auth_header != f"Bearer {TOKEN}":
         raise HTTPException(status_code=401, detail="Unauthorized")
+
     if not db:
         return [{"type": "text", "text": "Error: Database is not configured correctly."}]
+
+    entry = tool_request.parameters.get("entry")
+    if not entry:
+        return [{"type": "text", "text": "Sorry, I didn't get a workout to log."}]
+
     parsed_data = parse_workout_string(entry)
+
     if not parsed_data:
         return [{"type": "text", "text": f"Sorry, I couldn't understand that format. Try something like 'Bench Press 60x5x5'."}]
-    user_id = f"whatsapp:{MY_NUMBER}"
+
+    # --- CRITICAL CHANGE: Use the ID of the person who sent the message ---
+    user_id = tool_request.message.user.id
     parsed_data["user_id"] = user_id
     parsed_data["timestamp"] = datetime.now(timezone.utc)
+
     try:
-        doc_ref = db.collection("workouts").add(parsed_data)
+        db.collection("workouts").add(parsed_data)
         log_msg = (
             f"💪 Logged: {parsed_data['name']}!\n"
             f"- Weight: {parsed_data['weight']} kg"
@@ -141,16 +167,22 @@ async def run_log_workout(request: Request, entry: Annotated[str, Body(embed=Tru
     except Exception as e:
         return [{"type": "text", "text": "Sorry, there was an error saving your workout."}]
 
-# --- VIEW PROGRESS TOOL (Upgraded with Graphing) ---
+
+# --- VIEW PROGRESS TOOL (Upgraded for Multi-User) ---
 @app.post("/run/view_progress")
-async def run_view_progress(request: Request, exercise: Annotated[str, Body(embed=True)]):
+async def run_view_progress(request: Request, tool_request: ToolRunRequest):
     auth_header = request.headers.get("Authorization")
     if not auth_header or auth_header != f"Bearer {TOKEN}":
         raise HTTPException(status_code=401, detail="Unauthorized")
     if not db:
         return [{"type": "text", "text": "Error: Database is not configured correctly."}]
 
-    user_id = f"whatsapp:{MY_NUMBER}"
+    # --- CRITICAL CHANGE: Use the ID of the person who sent the message ---
+    user_id = tool_request.message.user.id
+    exercise = tool_request.parameters.get("exercise")
+    if not exercise:
+        return [{"type": "text", "text": "Sorry, I didn't get an exercise name to look up."}]
+
     exercise_name = exercise.strip().title()
 
     try:
@@ -166,13 +198,10 @@ async def run_view_progress(request: Request, exercise: Annotated[str, Body(embe
             return [{"type": "text", "text": f"No logs found for '{exercise_name}'. Try logging one first!"}]
 
         # --- Prepare data for the graph ---
-        dates = []
-        weights = []
         summary_text = f"📈 Progress for {exercise_name}:\n\n"
         ist = timezone(timedelta(hours=5, minutes=30))
 
-        # We take the last 5 for the text summary
-        for log in logs[-5:]:
+        for log in logs[-5:]: # Summary of the last 5 logs
             data = log.to_dict()
             timestamp_ist = data['timestamp'].astimezone(ist)
             date_str = timestamp_ist.strftime("%b %d")
@@ -183,14 +212,10 @@ async def run_view_progress(request: Request, exercise: Annotated[str, Body(embe
             )
             summary_text += log_str + "\n"
 
-        # We use all fetched logs for the graph
-        for log in logs:
-            data = log.to_dict()
-            timestamp_ist = data['timestamp'].astimezone(ist)
-            dates.append(timestamp_ist.strftime("%d-%b"))
-            weights.append(data['weight'])
-
         # --- Generate the graph image ---
+        dates = [log.to_dict()['timestamp'].astimezone(ist).strftime("%d-%b") for log in logs]
+        weights = [log.to_dict()['weight'] for log in logs]
+        
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.plot(dates, weights, marker='o', linestyle='-', color='b')
         ax.set_title(f"Weight Progression for {exercise_name}", fontsize=16)
@@ -200,15 +225,13 @@ async def run_view_progress(request: Request, exercise: Annotated[str, Body(embe
         plt.xticks(rotation=45, ha="right")
         plt.tight_layout()
 
-        # Save plot to a memory buffer
         buf = io.BytesIO()
         plt.savefig(buf, format='png')
         buf.seek(0)
         image_base64 = base64.b64encode(buf.read()).decode('utf-8')
         buf.close()
-        plt.close(fig) # Close the figure to free memory
+        plt.close(fig)
 
-        # --- Return both text summary and the graph image ---
         return [
             {"type": "text", "text": summary_text},
             {"type": "image", "mimeType": "image/png", "data": image_base64}
@@ -217,4 +240,3 @@ async def run_view_progress(request: Request, exercise: Annotated[str, Body(embe
     except Exception as e:
         print(f"Error generating progress view: {e}")
         return [{"type": "text", "text": "Sorry, there was an error fetching your progress."}]
-

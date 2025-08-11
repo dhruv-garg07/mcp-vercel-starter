@@ -89,7 +89,7 @@ def parse_workout_string(log_string: str) -> dict | None:
         "per_side": data.get("per_side") is not None
     }
 
-# --- MANIFEST ENDPOINT (No change) ---
+# --- MANIFEST ENDPOINT (Updated with Greet tool) ---
 @app.api_route("/", methods=["GET", "POST"])
 async def get_manifest() -> dict[str, Any]:
     return {
@@ -104,6 +104,11 @@ async def get_manifest() -> dict[str, Any]:
                 "description": "Validates the server connection.",
                 "parameters": [],
                 "returns": [{"type": "string"}]
+            },
+            "greet": {
+                "description": "Greets the user and lists available commands. Use this when the user sends a greeting like 'hi', 'hello', or asks for 'help'.",
+                "parameters": [],
+                "returns": [{"type": "text"}]
             },
             "log_workout": {
                 "description": "Logs a workout entry into the user's personal database. Use this when the user says 'log', 'add', or 'save' a workout. Example format: 'Squat 100x5x5' or 'Incline Curl 12.5x2x8'.",
@@ -130,6 +135,29 @@ async def run_validate(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return MY_NUMBER
 
+# --- NEW: GREET TOOL ---
+@app.post("/run/greet")
+async def run_greet(request: Request, tool_request: ToolRunRequest):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or auth_header != f"Bearer {TOKEN}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    user_name = tool_request.message.user.name or "there"
+    
+    welcome_message = (
+        f"Hi {user_name}! I'm your personal workout logger.\n\n"
+        "Here's what you can do:\n\n"
+        "1️⃣ **Log a workout:**\n"
+        "   - `log Bench Press 60x5x5`\n"
+        "   - `add Squat 100x3x8`\n\n"
+        "2️⃣ **View your progress:**\n"
+        "   - `show my progress for Bench Press`\n"
+        "   - `view history for Squat`\n\n"
+        "Just send a message and I'll take care of the rest!"
+    )
+    return [{"type": "text", "text": welcome_message}]
+
+
 # --- LOG WORKOUT TOOL (Upgraded for Multi-User) ---
 @app.post("/run/log_workout")
 async def run_log_workout(request: Request, tool_request: ToolRunRequest):
@@ -149,7 +177,6 @@ async def run_log_workout(request: Request, tool_request: ToolRunRequest):
     if not parsed_data:
         return [{"type": "text", "text": f"Sorry, I couldn't understand that format. Try something like 'Bench Press 60x5x5'."}]
 
-    # --- CRITICAL CHANGE: Use the ID of the person who sent the message ---
     user_id = tool_request.message.user.id
     parsed_data["user_id"] = user_id
     parsed_data["timestamp"] = datetime.now(timezone.utc)
@@ -177,7 +204,6 @@ async def run_view_progress(request: Request, tool_request: ToolRunRequest):
     if not db:
         return [{"type": "text", "text": "Error: Database is not configured correctly."}]
 
-    # --- CRITICAL CHANGE: Use the ID of the person who sent the message ---
     user_id = tool_request.message.user.id
     exercise = tool_request.parameters.get("exercise")
     if not exercise:
@@ -197,11 +223,10 @@ async def run_view_progress(request: Request, tool_request: ToolRunRequest):
         if not logs:
             return [{"type": "text", "text": f"No logs found for '{exercise_name}'. Try logging one first!"}]
 
-        # --- Prepare data for the graph ---
         summary_text = f"📈 Progress for {exercise_name}:\n\n"
         ist = timezone(timedelta(hours=5, minutes=30))
 
-        for log in logs[-5:]: # Summary of the last 5 logs
+        for log in logs[-5:]:
             data = log.to_dict()
             timestamp_ist = data['timestamp'].astimezone(ist)
             date_str = timestamp_ist.strftime("%b %d")
@@ -212,7 +237,6 @@ async def run_view_progress(request: Request, tool_request: ToolRunRequest):
             )
             summary_text += log_str + "\n"
 
-        # --- Generate the graph image ---
         dates = [log.to_dict()['timestamp'].astimezone(ist).strftime("%d-%b") for log in logs]
         weights = [log.to_dict()['weight'] for log in logs]
         

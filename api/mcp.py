@@ -125,7 +125,7 @@ async def get_manifest() -> dict[str, Any]:
     }
 
 # --- Tool: validate ---
-@app.post("/run/validate")
+@app.api_route("/run/validate", methods=["GET", "POST"])
 async def run_validate(request: Request):
     auth_header = request.headers.get("Authorization")
     if not auth_header or auth_header != f"Bearer {TOKEN}":
